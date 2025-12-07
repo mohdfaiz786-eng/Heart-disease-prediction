@@ -1,100 +1,161 @@
-# app.py
-# ---------------------------------------------
-# Heart Disease Prediction using Streamlit
-# with separate CSV dataset (heart_disease.csv)
-# ---------------------------------------------
-
+# app_modern.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
 import joblib
+import io
+import plotly.express as px
 
-st.set_page_config(page_title="Heart Disease Prediction", layout="centered")
+st.set_page_config(
+    page_title="❤️ Heart Disease Predictor",
+    page_icon="❤️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-st.title("❤️ Heart Disease Prediction App")
+st.markdown("<h1 style='text-align:center; color:red;'>❤️ Heart Disease Prediction</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align:center;'>Interactive ML-based prediction using Streamlit</p>", unsafe_allow_html=True)
+st.markdown("---")
 
-# --- Load dataset ---
-@st.cache_data
-def load_data():
-    df = pd.read_csv("heart_disease.csv")
+# Sidebar for dataset and model options
+st.sidebar.header("1️⃣ Dataset & Model Options")
+uploaded_file = st.sidebar.file_uploader("Upload CSV (optional)", type=["csv"])
+model_choice = st.sidebar.selectbox("Choose model", ["Logistic Regression", "Random Forest"])
+test_size = st.sidebar.slider("Test size (%)", 10, 50, 25)
+random_state = st.sidebar.number_input("Random state", value=42, step=1)
+
+EXPECTED_COLS = ['age','sex','cp','trestbps','chol','fbs','restecg','thalach','exang','oldpeak','slope','ca','thal','target']
+
+# --- DATA LOADING ---
+def make_demo_df(n=200, random_state=42):
+    rng = np.random.RandomState(random_state)
+    df = pd.DataFrame({
+        'age': rng.randint(29, 77, size=n),
+        'sex': rng.randint(0,2,size=n),
+        'cp': rng.randint(0,4,size=n),
+        'trestbps': rng.randint(94,200,size=n),
+        'chol': rng.randint(126,564,size=n),
+        'fbs': rng.randint(0,2,size=n),
+        'restecg': rng.randint(0,3,size=n),
+        'thalach': rng.randint(70,202,size=n),
+        'exang': rng.randint(0,2,size=n),
+        'oldpeak': np.round(rng.uniform(0,6.2,size=n),1),
+        'slope': rng.randint(0,3,size=n),
+        'ca': rng.randint(0,4,size=n),
+        'thal': rng.randint(0,4,size=n),
+    })
+    logits = 0.03*(df.age-50) + 0.8*df.exang + 0.02*(df.chol-200)/10 - 0.02*(df.thalach-150)/5 + 0.4*df.cp
+    probs = 1/(1+np.exp(-logits))
+    df['target'] = (probs > 0.5).astype(int)
     return df
 
-try:
-    df = load_data()
-    st.success("✅ Dataset loaded successfully!")
-except FileNotFoundError:
-    st.error("❌ Dataset not found! Please place 'heart_disease.csv' in the same folder as this app.")
-    st.stop()
+if uploaded_file:
+    try:
+        df = pd.read_csv(uploaded_file)
+        st.sidebar.success("CSV loaded successfully!")
+    except:
+        st.sidebar.error("Failed to read CSV. Using demo dataset.")
+        df = make_demo_df()
+else:
+    st.sidebar.info("No file uploaded — using demo dataset.")
+    df = make_demo_df()
 
-st.subheader("📊 Dataset Preview")
-st.dataframe(df.head())
+# Preview
+with st.expander("Preview Dataset"):
+    st.dataframe(df.head(10))
 
-# --- Features and target ---
+# Check columns
+missing = [c for c in EXPECTED_COLS if c not in df.columns]
+if missing:
+    st.warning(f"Missing columns: {missing}. Using demo dataset or 'target' must exist.")
+    if 'target' not in df.columns:
+        st.error("'target' missing. Cannot train.")
+        st.stop()
+
 X = df.drop(columns=['target'])
 y = df['target']
 
-# --- Model selection ---
-model_choice = st.selectbox("Select Model", ["Logistic Regression", "Random Forest"])
+# --- TRAIN MODEL ---
+if st.button("Train Model"):
+    st.info("Training model... ⏳")
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size/100, random_state=random_state, stratify=y if len(np.unique(y))>1 else None
+    )
 
-if model_choice == "Logistic Regression":
-    model = Pipeline([
-        ('scaler', StandardScaler()),
-        ('clf', LogisticRegression(max_iter=1000))
-    ])
-else:
-    model = RandomForestClassifier(n_estimators=200, random_state=42)
+    scaler = StandardScaler()
+    clf = LogisticRegression(max_iter=1000, class_weight='balanced') if model_choice=="Logistic Regression" else RandomForestClassifier(n_estimators=200, random_state=random_state, class_weight='balanced')
+    pipeline = Pipeline([("scaler", scaler), ("clf", clf)])
+    pipeline.fit(X_train, y_train)
+    
+    # Metrics
+    y_pred = pipeline.predict(X_test)
+    y_proba = pipeline.predict_proba(X_test)[:,1] if hasattr(pipeline, "predict_proba") else np.zeros_like(y_pred)
+    metrics = {
+        "Accuracy": accuracy_score(y_test, y_pred),
+        "Precision": precision_score(y_test, y_pred, zero_division=0),
+        "Recall": recall_score(y_test, y_pred, zero_division=0),
+        "F1 Score": f1_score(y_test, y_pred, zero_division=0),
+        "ROC AUC": roc_auc_score(y_test, y_proba)
+    }
+    col1, col2, col3, col4, col5 = st.columns(5)
+    for c, (name, val) in zip([col1, col2, col3, col4, col5], metrics.items()):
+        c.metric(label=name, value=f"{val:.2f}")
 
-# --- Train-test split ---
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    # Confusion matrix
+    cm = confusion_matrix(y_test, y_pred)
+    st.subheader("Confusion Matrix")
+    fig_cm = px.imshow(cm, text_auto=True, color_continuous_scale="reds")
+    st.plotly_chart(fig_cm)
 
-if st.button("🚀 Train Model"):
-    model.fit(X_train, y_train)
-    preds = model.predict(X_test)
-    acc = accuracy_score(y_test, preds)
-    cm = confusion_matrix(y_test, preds)
-    st.success(f"Model trained successfully! ✅ Accuracy: {acc:.2f}")
-    st.write("Confusion Matrix:")
-    st.write(cm)
-    joblib.dump(model, "heart_model.joblib")
-    st.info("💾 Model saved as 'heart_model.joblib'")
+    # Feature importance
+    if model_choice=="Random Forest":
+        try:
+            importances = pipeline.named_steps['clf'].feature_importances_
+            df_imp = pd.DataFrame({"feature": X.columns, "importance": importances}).sort_values(by="importance", ascending=False)
+            st.subheader("Top 10 Feature Importances")
+            fig_imp = px.bar(df_imp.head(10), x="feature", y="importance", color="importance", color_continuous_scale="blues")
+            st.plotly_chart(fig_imp)
+        except:
+            st.write("Cannot show feature importance.")
 
-# --- Prediction Section ---
-st.header("🔍 Predict for a Single Patient")
+    # Save model
+    joblib.dump(pipeline, "heart_model.joblib")
+    st.success("Model trained and saved as `heart_model.joblib`.")
+    st.download_button("Download Model", data=open("heart_model.joblib","rb").read(), file_name="heart_model.joblib")
 
-col1, col2 = st.columns(2)
-with col1:
-    age = st.number_input("Age", 20, 100, 50)
-    sex = st.selectbox("Sex", [0, 1], format_func=lambda x: "Female" if x == 0 else "Male")
-    cp = st.number_input("Chest Pain Type (0-3)", 0, 3, 1)
-    trestbps = st.number_input("Resting BP", 80, 200, 120)
-    chol = st.number_input("Cholesterol", 100, 400, 200)
-    fbs = st.selectbox("Fasting Blood Sugar >120mg/dl", [0, 1])
-with col2:
-    restecg = st.number_input("Resting ECG (0-2)", 0, 2, 1)
-    thalach = st.number_input("Max Heart Rate", 70, 210, 150)
-    exang = st.selectbox("Exercise Induced Angina", [0, 1])
-    oldpeak = st.number_input("Oldpeak", 0.0, 6.0, 1.0)
-    slope = st.number_input("Slope (0-2)", 0, 2, 1)
-    ca = st.number_input("CA (0-3)", 0, 3, 0)
-    thal = st.number_input("Thal (0-3)", 0, 3, 1)
+# --- SINGLE PREDICTION ---
+st.header("2️⃣ Predict Single Case")
+with st.form("predict_form"):
+    cols = st.columns(2)
+    input_data = {}
+    for i, col in enumerate(X.columns):
+        with cols[i%2]:
+            input_data[col] = st.number_input(col, value=float(df[col].median()))
+    submit = st.form_submit_button("Predict")
+    if submit:
+        input_df = pd.DataFrame([input_data])
+        try:
+            model = joblib.load("heart_model.joblib")
+            pred = model.predict(input_df)[0]
+            proba = model.predict_proba(input_df)[0][1] if hasattr(model, "predict_proba") else None
+            st.success(f"Prediction: {'❤️ Disease' if pred==1 else '💚 No Disease'}")
+            if proba is not None:
+                st.info(f"Probability of disease: {proba:.2f}")
+        except:
+            st.error("No trained model found. Train a model first.")
 
-input_data = np.array([[age, sex, cp, trestbps, chol, fbs, restecg,
-                        thalach, exang, oldpeak, slope, ca, thal]])
-
-if st.button("🧠 Predict Heart Disease"):
-    try:
-        model = joblib.load("heart_model.joblib")
-        pred = model.predict(input_data)[0]
-        result = "🚨 Likely Heart Disease" if pred == 1 else "💚 No Heart Disease Detected"
-        st.success(f"Prediction: {result}")
-    except:
-        st.warning("Please train the model first!")
+# --- DATA SUMMARY ---
+with st.expander("Data Summary & Target Distribution"):
+    st.write(df.describe())
+    st.write("Target class distribution:")
+    fig_dist = px.histogram(df, x="target", color="target", text_auto=True)
+    st.plotly_chart(fig_dist)
 
 st.markdown("---")
-st.caption("Demo dataset inspired by UCI Heart Disease dataset. For educational use only.")
+st.caption("⚠️ This is a demo. Not for clinical use.")
